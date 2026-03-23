@@ -1,0 +1,13 @@
+[Unit]
+Description=Mouse Gesture Daemon
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/%u/.local/bin/mouse-gestures.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
