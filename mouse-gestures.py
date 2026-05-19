@@ -4,7 +4,6 @@
 import time
 import sys
 import threading
-import glob
 from evdev import InputDevice, UInput, ecodes as e, list_devices
 
 # ==========================================
@@ -54,15 +53,17 @@ def find_keyboard_device() -> InputDevice | None:
 super_held = False   # global flag, written by kb thread, read by mouse loop
 
 def monitor_super_key(kb_dev: InputDevice) -> None:
-    """Background thread: watch for Super press/release, update super_held."""
+    """Background thread: watch for Super press/release, forward to UInput."""
     global super_held
     try:
         for ev in kb_dev.read_loop():
             if ev.type == e.EV_KEY and ev.code in (e.KEY_LEFTMETA, e.KEY_RIGHTMETA):
-                if ev.value == 1:       # key down
+                if ev.value == 1:
                     super_held = True
-                elif ev.value == 0:     # key up
+                    ui.write(e.EV_KEY, ev.code, 1); ui.syn()
+                elif ev.value == 0:
                     super_held = False
+                    ui.write(e.EV_KEY, ev.code, 0); ui.syn()
     except Exception as ex:
         print(f"[kb monitor] stopped: {ex}")
 
@@ -74,7 +75,7 @@ try:
     mouse = InputDevice(DEVICE)
     mouse.grab()
 except Exception as ex:
-    sys.exit(f"Error grabbing device: {ex}")
+    sys.exit(f"Error opening device: {ex}")
 
 kb = find_keyboard_device()
 if kb is None:
@@ -130,10 +131,6 @@ def apply_sensitivity(value: float, remainder: float) -> tuple[int, float]:
     move = int(raw)
     return move, raw - move
 
-def passthrough(ev) -> None:
-    """Forward a raw event unchanged (used in Super pass-through mode)."""
-    if ev.type in caps and ev.code in caps[ev.type]:
-        ui.write(ev.type, ev.code, ev.value)
 
 # ==========================================
 # MAIN LOOP
@@ -155,20 +152,16 @@ try:
     for ev in mouse.read_loop():
 
         # ----------------------------------------
-        # SUPER PASS-THROUGH — bypass everything
+        # SUPER HELD — forward via UInput (same device as Super key)
         # ----------------------------------------
         if super_held:
             if tracking:
-                # Super pressed mid-gesture: cleanly abort the gesture
-                # and release RMB so the system sees a normal state
-                tracking  = False
-                sequence  = []
-                dx = dy   = 0
-                ui.write(e.EV_KEY, e.BTN_RIGHT, 0)
-                ui.syn()
-
-            # Forward event and skip all gesture logic
-            passthrough(ev)
+                tracking = False
+                sequence = []
+                dx = dy = 0
+                ui.write(e.EV_KEY, e.BTN_RIGHT, 0); ui.syn()
+            if ev.type in caps and ev.code in caps[ev.type]:
+                ui.write(ev.type, ev.code, ev.value)
             if ev.type == e.EV_SYN:
                 ui.syn()
             continue
@@ -185,6 +178,7 @@ try:
         elif ev.type == e.EV_KEY and ev.code == e.BTN_RIGHT:
             if ev.value == 1:                          # press
                 tracking, sequence, dx, dy = True, [], 0, 0
+                rem_x = rem_y = 0.0
 
             elif ev.value == 0:                        # release
                 tracking = False
@@ -203,7 +197,6 @@ try:
 
                     if not sequence or sequence[-1] != direction:
                         sequence.append(direction)
-                        # print(f"  stroke: {sequence}")
 
                     dx = dy = 0
 
